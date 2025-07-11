@@ -1,4 +1,4 @@
-# 🚨 FiveM 911 CAD Integration
+# FiveM 911 CAD Integration
 
 A FiveM resource that integrates 911 emergency calls with your CAD (Computer Aided Dispatch) system.
 
