@@ -1,0 +1,18 @@
+{
+    "version": "1.0.0",
+    "name": "CAD-911 Integration",
+    "description": "FiveM 911 Emergency Call Integration with CAD Systems",
+    "author": "CAD System",
+    "repository": "https://github.com/yourusername/cad-911",
+    "changelog": {
+        "1.0.0": [
+            "Initial release",
+            "Basic 911 command functionality",
+            "Location detection with nearest-postal",
+            "CAD system integration",
+            "Framework support (ESX, QBCore, Standalone)",
+            "Admin commands for testing",
+            "Discord webhook support"
+        ]
+    }
+}
