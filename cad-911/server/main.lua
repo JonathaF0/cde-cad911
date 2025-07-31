@@ -1,5 +1,5 @@
 -- server/main.lua
--- CAD-911 Server Side Script
+-- CAD-911 Server Side Script with NPC Report Support
 
 -- Initialize framework if needed
 local Framework = nil
@@ -82,10 +82,7 @@ local function GetNearestPostal(coords, source)
     return postal
 end
 
--- Function to get street names at position (CLIENT-SIDE ONLY)
--- This function is removed from server - street names will be handled client-side
-
--- Function to format location with postal (street names handled client-side)
+-- Function to format location with postal
 local function FormatLocation(coords, source, clientLocation)
     local location = clientLocation or ""
     
@@ -120,7 +117,7 @@ local function FormatLocation(coords, source, clientLocation)
 end
 
 -- Function to send 911 call to CAD
-local function SendToCAD(callData)
+local function SendToCAD(callData, isNPCReport, isAnonymous)
     -- Only enhance location if coords are provided and postal is missing
     if callData.coords and Config.UsePostal and not string.find(callData.location, "Postal") then
         local postal = GetNearestPostal(callData.coords, callData.source)
@@ -134,12 +131,27 @@ local function SendToCAD(callData)
         end
     end
     
+    -- Determine caller name
+    local callerName = "Anonymous Caller"
+    if not isAnonymous then
+        if isNPCReport then
+            callerName = "Anonymous Witness"
+        else
+            callerName = callData.playerName
+        end
+    end
+    
     -- Prepare the data for CAD API
     local postData = {
         callType = "911 - " .. callData.description,
         location = callData.location,
-        callerName = callData.playerName,
-        communityId = Config.CommunityID
+        callerName = callerName,  -- Changed from 'caller' to 'callerName'
+        communityId = Config.CommunityID,
+        -- Add caller info for potential civilian lookup (not for anonymous)
+        callerInfo = (isNPCReport or isAnonymous) and {
+            firstName = "Anonymous",
+            lastName = isAnonymous and "Caller" or "Witness"
+        } or nil
     }
     
     -- Convert to JSON
@@ -150,7 +162,8 @@ local function SendToCAD(callData)
         local success = statusCode == 200 or statusCode == 201
         
         if success then
-            print(string.format("^2[CAD-911] Call sent successfully from %s^0", callData.playerName))
+            local reportType = isAnonymous and "Anonymous Call" or (isNPCReport and "NPC Report" or "Player Call")
+            print(string.format("^2[CAD-911] %s sent successfully from %s^0", reportType, isAnonymous and "Anonymous" or (callData.playerName or "NPC")))
             
             -- Log the call ID if provided
             if response then
@@ -162,7 +175,7 @@ local function SendToCAD(callData)
             
             -- Send to Discord if enabled
             if Config.LogToDiscord and Config.DiscordWebhook ~= "" then
-                SendToDiscord(callData)
+                SendToDiscord(callData, isNPCReport, isAnonymous)
             end
         else
             print(string.format("^1[CAD-911] Failed to send call. Status: %d^0", statusCode))
@@ -171,12 +184,14 @@ local function SendToCAD(callData)
             end
         end
         
-        -- Notify the player
-        TriggerClientEvent('cad:911CallResponse', callData.source, success, callData)
+        -- Notify the player (if not NPC report)
+        if callData.source then
+            TriggerClientEvent('cad:911CallResponse', callData.source, success, callData, isNPCReport, isAnonymous)
+        end
         
         -- Notify emergency services if enabled
         if success and Config.NotifyEmergencyServices then
-            NotifyEmergencyServices(callData)
+            NotifyEmergencyServices(callData, isNPCReport, isAnonymous)
         end
     end, 'POST', jsonData, {
         ['Content-Type'] = 'application/json',
@@ -204,14 +219,57 @@ AddEventHandler('cad:send911Call', function(data)
     ))
     
     -- Send to CAD
-    SendToCAD(data)
+    SendToCAD(data, false, false)
+end)
+
+-- Handle anonymous 911 call from client
+RegisterNetEvent('cad:sendAnonymous911Call')
+AddEventHandler('cad:sendAnonymous911Call', function(data)
+    local source = source
+    
+    -- Add source for response
+    data.source = source
+    
+    -- Log to console (don't log player name for anonymity)
+    print(string.format("^3[CAD-911] Anonymous tip received: %s at %s^0", 
+        data.description, 
+        data.location
+    ))
+    
+    -- Send to CAD as anonymous
+    SendToCAD(data, false, true)
+end)
+
+-- Handle NPC 911 report from client
+RegisterNetEvent('cad:sendNPC911Call')
+AddEventHandler('cad:sendNPC911Call', function(data)
+    local source = source
+    
+    -- Validate that NPCs are enabled
+    if not Config.NPCReports.Enabled then
+        return
+    end
+    
+    -- Add source for response
+    data.source = source
+    
+    -- Log to console
+    print(string.format("^3[CAD-911] NPC Report (%s): %s at %s^0", 
+        data.reportType or "Unknown",
+        data.description, 
+        data.location
+    ))
+    
+    -- Send to CAD as NPC report
+    SendToCAD(data, true, false)
 end)
 
 -- Function to notify emergency services
-function NotifyEmergencyServices(callData)
+function NotifyEmergencyServices(callData, isNPCReport, isAnonymous)
     if not Config.NotifyEmergencyServices then return end
     
     local players = GetPlayers()
+    local prefix = isAnonymous and "911 ANONYMOUS TIP" or (isNPCReport and "911 WITNESS REPORT" or "911 DISPATCH")
     
     for _, playerId in ipairs(players) do
         playerId = tonumber(playerId)
@@ -255,9 +313,9 @@ function NotifyEmergencyServices(callData)
             -- Send notification
             if isEmergency then
                 TriggerClientEvent('chat:addMessage', playerId, {
-                    color = {255, 0, 0},
+                    color = isAnonymous and {128, 128, 128} or (isNPCReport and {255, 165, 0} or {255, 0, 0}), -- Gray for anon, Orange for NPC, Red for player
                     multiline = true,
-                    args = {"911 DISPATCH", callData.description .. " | Location: " .. callData.location}
+                    args = {prefix, callData.description .. " | Location: " .. callData.location}
                 })
             end
         end
@@ -265,18 +323,18 @@ function NotifyEmergencyServices(callData)
 end
 
 -- Function to send to Discord
-function SendToDiscord(callData)
+function SendToDiscord(callData, isNPCReport, isAnonymous)
     if not Config.LogToDiscord or Config.DiscordWebhook == "" then return end
     
     local embed = {
         {
-            title = "🚨 911 Emergency Call",
+            title = isAnonymous and "📞 Anonymous 911 Tip" or (isNPCReport and "👁️ 911 Witness Report" or "🚨 911 Emergency Call"),
             description = callData.description,
-            color = 15158332, -- Red
+            color = isAnonymous and 8421504 or (isNPCReport and 16753920 or 15158332), -- Gray for anon, Orange for NPC, Red for player
             fields = {
                 {
                     name = "Caller",
-                    value = callData.playerName,
+                    value = isAnonymous and "Anonymous Tip" or (isNPCReport and "Anonymous Witness" or callData.playerName),
                     inline = true
                 },
                 {
@@ -285,9 +343,9 @@ function SendToDiscord(callData)
                     inline = true
                 },
                 {
-                    name = "Coordinates",
-                    value = string.format("X: %.2f, Y: %.2f", callData.coords.x, callData.coords.y),
-                    inline = false
+                    name = "Report Type",
+                    value = isAnonymous and "Anonymous" or (isNPCReport and (callData.reportType or "Witness") or "Player"),
+                    inline = true
                 }
             },
             footer = {
@@ -295,6 +353,15 @@ function SendToDiscord(callData)
             }
         }
     }
+    
+    -- Only include coordinates for non-anonymous calls
+    if callData.coords and not isAnonymous then
+        table.insert(embed[1].fields, {
+            name = "Coordinates",
+            value = string.format("X: %.2f, Y: %.2f", callData.coords.x, callData.coords.y),
+            inline = false
+        })
+    end
     
     PerformHttpRequest(Config.DiscordWebhook, function(err, text, headers) end, 
         'POST', 
@@ -319,7 +386,7 @@ if Config.EnableAdminCommands then
         local testData = {
             callType = "911 - Connection Test",
             location = "Server Test Location",
-            callerName = "System Test",
+            callerName = "System Test",  -- Changed from 'caller' to 'callerName'
             communityId = Config.CommunityID
         }
         
@@ -399,8 +466,28 @@ end
 
 -- Version check and startup tests
 Citizen.CreateThread(function()
-    print("^2[CAD-911] 911 CAD Integration v1.0.0 loaded^0")
-    print("^2[CAD-911] Command: /" .. Config.Command .. "^0")
+    -- Wait for config to load
+    while not Config do
+        Citizen.Wait(100)
+    end
+    
+    print("^2[CAD-911] 911 CAD Integration v1.2.0 loaded^0")
+    print("^2[CAD-911] Commands:^0")
+    print("^2[CAD-911]   - /" .. (Config.Command or "911") .. " - Regular 911 call^0")
+    print("^2[CAD-911]   - /" .. (Config.AnonymousCommand or "a911") .. " - Anonymous 911 tip^0")
+    
+    if Config.NPCReports.Enabled then
+        print("^2[CAD-911] NPC Reports: ENABLED^0")
+        if Config.NPCReports.Speeding.Enabled then
+            print("^2[CAD-911]   - Speeding Detection: ON (>" .. Config.NPCReports.Speeding.SpeedThreshold .. " km/h)^0")
+        end
+        if Config.NPCReports.Gunshots.Enabled then
+            print("^2[CAD-911]   - Gunshot Detection: ON^0")
+        end
+    else
+        print("^3[CAD-911] NPC Reports: DISABLED^0")
+    end
+    
     if Config.EnableAdminCommands then
         print("^2[CAD-911] Admin commands enabled. Use 'test911cad' and 'testpostal' in console to test.^0")
     end
