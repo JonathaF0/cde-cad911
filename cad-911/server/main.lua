@@ -27,8 +27,113 @@ local function GetPlayerCharacterName(source)
     return GetPlayerName(source)
 end
 
+-- Function to get nearest postal code
+local function GetNearestPostal(coords, source)
+    local postal = nil
+    
+    -- Try common export methods for nearest-postal
+    local methods = {
+        -- Most common method
+        function() return exports['nearest-postal']:get_postal(coords.x, coords.y, coords.z) end,
+        -- Alternative method
+        function() return exports['nearest-postal']:getPostalCode(coords.x, coords.y, coords.z) end,
+        -- Another common method
+        function() return exports['nearest-postal']:nearestPostal(coords.x, coords.y, coords.z) end,
+        -- Simplified method
+        function() return exports['nearest-postal']:postal(coords.x, coords.y) end,
+        -- Table method
+        function() return exports['nearest-postal']:get_nearest_postal(coords.x, coords.y, coords.z) end
+    }
+    
+    for i, method in ipairs(methods) do
+        local success, result = pcall(method)
+        
+        if success and result then
+            if type(result) == "table" then
+                if result.code then
+                    postal = tostring(result.code)
+                    print("^2[CAD-911] Postal found using method " .. i .. ": " .. postal .. "^0")
+                    break
+                elseif result.postal then
+                    postal = tostring(result.postal)
+                    print("^2[CAD-911] Postal found using method " .. i .. ": " .. postal .. "^0")
+                    break
+                end
+            elseif type(result) == "string" and result ~= "" then
+                postal = result
+                print("^2[CAD-911] Postal found using method " .. i .. ": " .. postal .. "^0")
+                break
+            elseif type(result) == "number" then
+                postal = tostring(result)
+                print("^2[CAD-911] Postal found using method " .. i .. ": " .. postal .. "^0")
+                break
+            end
+        elseif success then
+            print("^3[CAD-911] Method " .. i .. " returned: " .. tostring(result) .. "^0")
+        else
+            print("^1[CAD-911] Method " .. i .. " failed: " .. tostring(result) .. "^0")
+        end
+    end
+    
+    if not postal then
+        print("^1[CAD-911] Warning: Could not get postal code from nearest-postal (all methods failed)^0")
+    end
+    
+    return postal
+end
+
+-- Function to get street names at position (CLIENT-SIDE ONLY)
+-- This function is removed from server - street names will be handled client-side
+
+-- Function to format location with postal (street names handled client-side)
+local function FormatLocation(coords, source, clientLocation)
+    local location = clientLocation or ""
+    
+    -- Get postal code if enabled and not already included
+    if Config.UsePostal then
+        local postal = GetNearestPostal(coords, source)
+        if postal then
+            if location ~= "" and not string.find(location, "Postal") then
+                location = string.format(Config.Messages.LocationFormat, location, postal)
+            elseif location == "" then
+                location = "Postal " .. postal
+            end
+        end
+    end
+    
+    -- Add coordinates if enabled
+    if Config.UseCoordinates then
+        local coordStr = string.format("(%.1f, %.1f)", coords.x, coords.y)
+        if location ~= "" then
+            location = location .. " " .. coordStr
+        else
+            location = coordStr
+        end
+    end
+    
+    -- Fallback to coordinates if no location found
+    if location == "" then
+        location = string.format("%.2f, %.2f", coords.x, coords.y)
+    end
+    
+    return location
+end
+
 -- Function to send 911 call to CAD
 local function SendToCAD(callData)
+    -- Only enhance location if coords are provided and postal is missing
+    if callData.coords and Config.UsePostal and not string.find(callData.location, "Postal") then
+        local postal = GetNearestPostal(callData.coords, callData.source)
+        if postal then
+            -- Add postal to existing location if not already there
+            if callData.location and callData.location ~= "" then
+                callData.location = string.format(Config.Messages.LocationFormat, callData.location, postal)
+            else
+                callData.location = "Postal " .. postal
+            end
+        end
+    end
+    
     -- Prepare the data for CAD API
     local postData = {
         callType = "911 - " .. callData.description,
@@ -75,7 +180,8 @@ local function SendToCAD(callData)
         end
     end, 'POST', jsonData, {
         ['Content-Type'] = 'application/json',
-        ['Accept'] = 'application/json'
+        ['Accept'] = 'application/json',
+        ['X-API-Key'] = 'fivem-cad-911-key-2024'
     })
 end
 
@@ -217,6 +323,8 @@ if Config.EnableAdminCommands then
             communityId = Config.CommunityID
         }
         
+        print("^3[CAD-911] Sending test data: " .. json.encode(testData) .. "^0")
+        
         PerformHttpRequest(Config.CADEndpoint, function(statusCode, response, headers)
             if statusCode == 200 or statusCode == 201 then
                 print("^2[CAD-911] SUCCESS: CAD connection working!^0")
@@ -229,19 +337,93 @@ if Config.EnableAdminCommands then
                     print("^1[CAD-911] Response: " .. response .. "^0")
                 end
                 print("^1[CAD-911] Make sure your CAD backend is running and accessible^0")
+                
+                -- Debug the request data
+                print("^1[CAD-911] Request data sent: " .. json.encode(testData) .. "^0")
+                print("^1[CAD-911] Headers sent: Content-Type: application/json, X-API-Key: fivem-cad-911-key-2024^0")
             end
         end, 'POST', json.encode(testData), {
             ['Content-Type'] = 'application/json',
-            ['Accept'] = 'application/json'
+            ['Accept'] = 'application/json',
+            ['X-API-Key'] = 'fivem-cad-911-key-2024'
         })
     end, true)
 end
 
--- Version check
+-- Server command to test postal lookup
+if Config.EnableAdminCommands then
+    RegisterCommand('testpostal', function(source, args, rawCommand)
+        if source ~= 0 then 
+            print("^1[CAD-911] This command can only be used from the server console^0")
+            return 
+        end
+        
+        print("^3[CAD-911] === POSTAL TEST RESULTS ===^0")
+        
+        -- Test multiple locations
+        local testLocations = {
+            {name = "Los Santos Airport", x = -1037.0, y = -2737.0, z = 20.0},
+            {name = "Legion Square", x = 195.0, y = -933.0, z = 30.0},
+            {name = "Sandy Shores", x = 1961.0, y = 3740.0, z = 32.0}
+        }
+        
+        for _, location in ipairs(testLocations) do
+            local testCoords = {x = location.x, y = location.y, z = location.z}
+            local postal = GetNearestPostal(testCoords, nil)
+            
+            print("^3[CAD-911] Location: " .. location.name .. "^0")
+            print("^3[CAD-911]   Coordinates: " .. testCoords.x .. ", " .. testCoords.y .. "^0")
+            print("^3[CAD-911]   Postal Code: " .. (postal or "FAILED") .. "^0")
+            print("^3[CAD-911] ---^0")
+        end
+        
+        -- Test if nearest-postal resource exists
+        local resourceState = GetResourceState('nearest-postal')
+        print("^3[CAD-911] Nearest-postal resource state: " .. resourceState .. "^0")
+        
+        if resourceState ~= 'started' then
+            print("^1[CAD-911] ERROR: nearest-postal resource is not started!^0")
+            print("^1[CAD-911] Make sure to 'ensure nearest-postal' in your server.cfg^0")
+        end
+        
+        -- Try to list available exports
+        print("^3[CAD-911] Checking available exports...^0")
+        local success, exports_list = pcall(function()
+            return GetResourceMetadata('nearest-postal', 'export', 0)
+        end)
+        if success and exports_list then
+            print("^3[CAD-911] Available exports: " .. tostring(exports_list) .. "^0")
+        end
+    end, true)
+end
+
+-- Version check and startup tests
 Citizen.CreateThread(function()
     print("^2[CAD-911] 911 CAD Integration v1.0.0 loaded^0")
     print("^2[CAD-911] Command: /" .. Config.Command .. "^0")
     if Config.EnableAdminCommands then
-        print("^2[CAD-911] Admin commands enabled. Use 'test911cad' in console to test.^0")
+        print("^2[CAD-911] Admin commands enabled. Use 'test911cad' and 'testpostal' in console to test.^0")
+    end
+    
+    -- Wait for other resources to load
+    Citizen.Wait(3000)
+    
+    -- Check nearest-postal resource state
+    local resourceState = GetResourceState('nearest-postal')
+    print("^3[CAD-911] Checking nearest-postal resource: " .. resourceState .. "^0")
+    
+    if resourceState == 'started' then
+        -- Test nearest-postal integration
+        local testCoords = {x = 0.0, y = 0.0, z = 0.0}
+        local postal = GetNearestPostal(testCoords, nil)
+        if postal then
+            print("^2[CAD-911] Nearest-postal integration: SUCCESS^0")
+        else
+            print("^1[CAD-911] Nearest-postal integration: PARTIAL - Resource running but export calls failing^0")
+            print("^1[CAD-911] Try 'testpostal' command for detailed debugging^0")
+        end
+    else
+        print("^1[CAD-911] Nearest-postal integration: FAILED - Resource not started^0")
+        print("^1[CAD-911] Add 'ensure nearest-postal' to your server.cfg before 'ensure " .. GetCurrentResourceName() .. "'^0")
     end
 end)
