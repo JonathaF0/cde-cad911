@@ -4,8 +4,8 @@ Config = {}
 -- CAD SYSTEM CONFIGURATION (REQUIRED)
 -- ========================================
 -- You MUST update these values with your CAD system details
-Config.CADEndpoint = "http://localhost:3000/api/civilian/911-call" -- Your CAD backend URL
-Config.CommunityID = "YOUR_COMMUNITY_ID_HERE" -- Your community ID from CAD system
+Config.CADEndpoint = "https://cad.tnsrp.com/api/civilian/fivem-911-call" -- Your CAD backend URL
+Config.CommunityID = "" -- Your community ID from CAD system
 
 -- ========================================
 -- COMMAND CONFIGURATION
@@ -48,7 +48,7 @@ Config.BlipSettings = {
 -- ADVANCED FEATURES
 -- ========================================
 Config.NotifyEmergencyServices = false -- Notify online police/ems (requires job system)
-Config.EnableAdminCommands = true -- Enable admin commands for testing
+Config.EnableAdminCommands = false -- Enable admin commands for testing
 Config.LogToDiscord = false -- Enable Discord webhook logging
 Config.DiscordWebhook = "" -- Discord webhook URL (if LogToDiscord is true)
 
