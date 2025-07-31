@@ -16,30 +16,72 @@ local function GetStreetNames(coords)
     end
 end
 
+-- Function to get nearest postal code from client-side
+local function GetNearestPostal(coords)
+    local postal = nil
+    
+    -- Try multiple export methods for nearest-postal
+    local methods = {
+        -- Most common method
+        function() return exports['nearest-postal']:get_postal(coords.x, coords.y, coords.z) end,
+        -- Alternative methods
+        function() return exports['nearest-postal']:getPostalCode(coords.x, coords.y, coords.z) end,
+        function() return exports['nearest-postal']:nearestPostal(coords.x, coords.y, coords.z) end,
+        function() return exports['nearest-postal']:postal(coords.x, coords.y) end,
+        function() return exports['nearest-postal']:get_nearest_postal(coords.x, coords.y, coords.z) end,
+        -- No coordinates method
+        function() return exports['nearest-postal']:getPostal() end,
+    }
+    
+    for i, method in ipairs(methods) do
+        local success, result = pcall(method)
+        
+        if success and result then
+            if type(result) == "table" then
+                if result.code then
+                    postal = tostring(result.code)
+                    break
+                elseif result.postal then
+                    postal = tostring(result.postal)
+                    break
+                end
+            elseif type(result) == "string" and result ~= "" then
+                postal = result
+                break
+            elseif type(result) == "number" then
+                postal = tostring(result)
+                break
+            end
+        end
+    end
+    
+    return postal
+end
+
 -- Function to get complete location string
 local function GetLocationString(coords)
     local location = ""
     
     -- Get street names if enabled
     if Config.UseStreetNames then
-        location = GetStreetNames(coords)
+        local streetName = GetStreetNames(coords)
+        if streetName and streetName ~= "" then
+            location = streetName
+        end
     end
     
     -- Get postal code if enabled
     if Config.UsePostal then
-        -- Check if nearest-postal exists
-        local success, postal = pcall(function()
-            return exports['nearest-postal']:getPostal()
-        end)
-        
-        if success and postal then
+        local postal = GetNearestPostal(coords)
+        if postal then
             if location ~= "" then
-                location = string.format(Config.Messages.LocationFormat, location, postal.code)
+                location = string.format(Config.Messages.LocationFormat, location, postal)
             else
-                location = "Postal " .. postal.code
+                location = "Postal " .. postal
             end
-        elseif not success then
-            print("^1[CAD-911] Warning: nearest-postal not found. Install it for postal codes.^0")
+        elseif location == "" then
+            -- Fallback message if postal lookup fails
+            location = "Location Unknown"
         end
     end
     
@@ -154,6 +196,14 @@ if Config.EnableAdminCommands then
         
         print("^2[CAD-911] Current location: " .. location .. "^0")
         ShowNotification("~g~Location:~w~ " .. location)
+        
+        -- Test postal specifically
+        local postal = GetNearestPostal(coords)
+        if postal then
+            print("^2[CAD-911] Postal code: " .. postal .. "^0")
+        else
+            print("^1[CAD-911] Postal code: FAILED^0")
+        end
     end, false)
     
     TriggerEvent('chat:addSuggestion', '/testlocation', 'Test location detection for 911 calls')
