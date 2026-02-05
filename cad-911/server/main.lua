@@ -1,13 +1,20 @@
 -- server/main.lua
--- CAD-911 Server Side Script with NPC Report Support
+-- CAD-911 Server Side Script with CDE Duty Integration
+-- Version 2.2.0 - Complete Rewrite with Speed Camera Support & Improved LEO Bypass
 
--- Initialize framework if needed
+-- ========================================
+-- FRAMEWORK INITIALIZATION
+-- ========================================
 local Framework = nil
 if Config.Framework.ESX then
     Framework = exports['es_extended']:getSharedObject()
 elseif Config.Framework.QBCore then
     Framework = exports['qb-core']:GetCoreObject()
 end
+
+-- ========================================
+-- UTILITY FUNCTIONS
+-- ========================================
 
 -- Function to get player name based on framework
 local function GetPlayerCharacterName(source)
@@ -23,25 +30,18 @@ local function GetPlayerCharacterName(source)
         end
     end
     
-    -- Fallback to FiveM name
     return GetPlayerName(source)
 end
 
--- Function to get nearest postal code
+-- Function to get nearest postal code (server-side)
 local function GetNearestPostal(coords, source)
     local postal = nil
     
-    -- Try common export methods for nearest-postal
     local methods = {
-        -- Most common method
         function() return exports['nearest-postal']:get_postal(coords.x, coords.y, coords.z) end,
-        -- Alternative method
         function() return exports['nearest-postal']:getPostalCode(coords.x, coords.y, coords.z) end,
-        -- Another common method
         function() return exports['nearest-postal']:nearestPostal(coords.x, coords.y, coords.z) end,
-        -- Simplified method
         function() return exports['nearest-postal']:postal(coords.x, coords.y) end,
-        -- Table method
         function() return exports['nearest-postal']:get_nearest_postal(coords.x, coords.y, coords.z) end
     }
     
@@ -52,77 +52,124 @@ local function GetNearestPostal(coords, source)
             if type(result) == "table" then
                 if result.code then
                     postal = tostring(result.code)
-                    print("^2[CAD-911] Postal found using method " .. i .. ": " .. postal .. "^0")
                     break
                 elseif result.postal then
                     postal = tostring(result.postal)
-                    print("^2[CAD-911] Postal found using method " .. i .. ": " .. postal .. "^0")
                     break
                 end
             elseif type(result) == "string" and result ~= "" then
                 postal = result
-                print("^2[CAD-911] Postal found using method " .. i .. ": " .. postal .. "^0")
                 break
             elseif type(result) == "number" then
                 postal = tostring(result)
-                print("^2[CAD-911] Postal found using method " .. i .. ": " .. postal .. "^0")
                 break
             end
-        elseif success then
-            print("^3[CAD-911] Method " .. i .. " returned: " .. tostring(result) .. "^0")
-        else
-            print("^1[CAD-911] Method " .. i .. " failed: " .. tostring(result) .. "^0")
         end
-    end
-    
-    if not postal then
-        print("^1[CAD-911] Warning: Could not get postal code from nearest-postal (all methods failed)^0")
     end
     
     return postal
 end
 
--- Function to format location with postal
-local function FormatLocation(coords, source, clientLocation)
-    local location = clientLocation or ""
+-- ========================================
+-- LEO STATUS INTEGRATION (v2.2.0)
+-- ========================================
+
+-- Handle client request for LEO status
+RegisterNetEvent('cad:requestLEOStatus')
+AddEventHandler('cad:requestLEOStatus', function()
+    local source = source
+    local isLEO = false
     
-    -- Get postal code if enabled and not already included
-    if Config.UsePostal then
-        local postal = GetNearestPostal(coords, source)
-        if postal then
-            if location ~= "" and not string.find(location, "Postal") then
-                location = string.format(Config.Messages.LocationFormat, location, postal)
-            elseif location == "" then
-                location = "Postal " .. postal
-            end
+    -- Check if CDE_Duty is available
+    if GetResourceState('CDE_Duty') == 'started' then
+        -- Use export to check LEO status
+        local success, result = pcall(function()
+            return exports['CDE_Duty']:IsPlayerOnDutyLEO(source)
+        end)
+        
+        if success then
+            isLEO = result
         end
     end
     
-    -- Add coordinates if enabled
-    if Config.UseCoordinates then
-        local coordStr = string.format("(%.1f, %.1f)", coords.x, coords.y)
-        if location ~= "" then
-            location = location .. " " .. coordStr
-        else
-            location = coordStr
+    -- Send status to client
+    TriggerClientEvent('CDE:SetLEOStatus', source, isLEO)
+    
+    if Config.EnableDebug then
+        print(string.format("^3[CAD-911] Player %s LEO status: %s^0", GetPlayerName(source), tostring(isLEO)))
+    end
+end)
+
+-- ========================================
+-- CDE DUTY INTEGRATION (v2.2.0)
+-- ========================================
+
+-- Function to forward 911 calls to CDE Duty System
+local function ForwardToOnDutyUnits(callData, isNPCReport, isAnonymous)
+    -- Check if CDE_Duty resource is running
+    if GetResourceState('CDE_Duty') ~= 'started' then
+        if Config.EnableDebug then
+            print("^3[CAD-911] CDE_Duty not running, skipping unit notification^0")
+        end
+        return
+    end
+    
+    -- Prepare call data for duty system
+    local dutyCallData = {
+        description = callData.description,
+        location = callData.location,
+        coords = callData.coords,
+        playerName = callData.playerName,
+        caller = isAnonymous and "Anonymous" or callData.playerName,
+        reportType = callData.reportType,
+        message = callData.description,
+        isNPC = isNPCReport,
+        isAnonymous = isAnonymous
+    }
+    
+    -- Trigger event for CDE_Duty
+    TriggerEvent('cad:forward911ToUnits', dutyCallData)
+    
+    -- Get on-duty counts from CDE Duty
+    local leoCount = 0
+    local fireCount = 0
+    
+    if exports['CDE_Duty'] then
+        local success, leoUnits = pcall(function() return exports['CDE_Duty']:GetOnDutyLEOUnits() end)
+        if success and leoUnits then
+            leoCount = #leoUnits
+        end
+        
+        local success2, fireUnits = pcall(function() return exports['CDE_Duty']:GetOnDutyFireUnits() end)
+        if success2 and fireUnits then
+            fireCount = #fireUnits
         end
     end
     
-    -- Fallback to coordinates if no location found
-    if location == "" then
-        location = string.format("%.2f, %.2f", coords.x, coords.y)
-    end
-    
-    return location
+    print(string.format("^2[CAD-911] Forwarded %s to %d LEO and %d Fire/EMS units^0", 
+        isAnonymous and "anonymous tip" or (isNPCReport and "NPC report" or "911 call"),
+        leoCount, fireCount))
 end
 
--- Function to send 911 call to CAD
+-- ========================================
+-- MAIN CAD COMMUNICATION FUNCTION
+-- ========================================
+
 local function SendToCAD(callData, isNPCReport, isAnonymous)
-    -- Only enhance location if coords are provided and postal is missing
+    if Config.EnableDebug then
+        print("^3[CAD-911] === SENDING TO CAD ===^0")
+        print("^3[CAD-911] Type: " .. (isAnonymous and "Anonymous" or (isNPCReport and "NPC Report" or "Player Call")) .. "^0")
+        print("^3[CAD-911] Description: " .. (callData.description or "nil") .. "^0")
+        print("^3[CAD-911] Location: " .. (callData.location or "nil") .. "^0")
+        if callData.reportType then
+            print("^3[CAD-911] Report Type: " .. callData.reportType .. "^0")
+        end
+    end
+    
+    -- Enhance location with postal if needed
     if callData.coords and Config.UsePostal and not string.find(callData.location, "Postal") then
         local postal = GetNearestPostal(callData.coords, callData.source)
         if postal then
-            -- Add postal to existing location if not already there
             if callData.location and callData.location ~= "" then
                 callData.location = string.format(Config.Messages.LocationFormat, callData.location, postal)
             else
@@ -141,31 +188,52 @@ local function SendToCAD(callData, isNPCReport, isAnonymous)
         end
     end
     
-    -- Prepare the data for CAD API
+    -- Prepare data for CAD API
     local postData = {
         callType = "911 - " .. callData.description,
         location = callData.location,
-        callerName = callerName,  -- Changed from 'caller' to 'callerName'
+        callerName = callerName,
         communityId = Config.CommunityID,
-        -- Add caller info for potential civilian lookup (not for anonymous)
-        callerInfo = (isNPCReport or isAnonymous) and {
-            firstName = "Anonymous",
-            lastName = isAnonymous and "Caller" or "Witness"
-        } or nil
+        -- Add metadata
+        metadata = {
+            isNPCReport = isNPCReport,
+            isAnonymous = isAnonymous,
+            reportType = callData.reportType,
+            timestamp = os.time()
+        }
     }
     
-    -- Convert to JSON
+    -- Add caller info for non-anonymous calls
+    if not isAnonymous and not isNPCReport then
+        postData.callerInfo = {
+            playerId = callData.source,
+            playerName = callData.playerName
+        }
+    end
+    
     local jsonData = json.encode(postData)
+    
+    if Config.EnableDebug then
+        print("^3[CAD-911] Endpoint: " .. Config.CADEndpoint .. "^0")
+        print("^3[CAD-911] JSON Data: " .. jsonData .. "^0")
+    end
     
     -- Make HTTP request to CAD
     PerformHttpRequest(Config.CADEndpoint, function(statusCode, response, headers)
         local success = statusCode == 200 or statusCode == 201
         
+        if Config.EnableDebug then
+            print("^3[CAD-911] Response Status: " .. tostring(statusCode) .. "^0")
+            if response and response ~= "" then
+                print("^3[CAD-911] Response: " .. tostring(response) .. "^0")
+            end
+        end
+        
         if success then
-            local reportType = isAnonymous and "Anonymous Call" or (isNPCReport and "NPC Report" or "Player Call")
-            print(string.format("^2[CAD-911] %s sent successfully from %s^0", reportType, isAnonymous and "Anonymous" or (callData.playerName or "NPC")))
+            local reportTypeStr = isAnonymous and "Anonymous Call" or (isNPCReport and "NPC Report" or "Player Call")
+            print(string.format("^2[CAD-911] %s sent successfully^0", reportTypeStr))
             
-            -- Log the call ID if provided
+            -- Parse response for call ID
             if response then
                 local responseData = json.decode(response)
                 if responseData and responseData._id then
@@ -178,29 +246,46 @@ local function SendToCAD(callData, isNPCReport, isAnonymous)
                 SendToDiscord(callData, isNPCReport, isAnonymous)
             end
         else
-            print(string.format("^1[CAD-911] Failed to send call. Status: %d^0", statusCode))
-            if response then
-                print("^1[CAD-911] Response: " .. response .. "^0")
+            print(string.format("^1[CAD-911] Failed to send call. Status: %d^0", statusCode or 0))
+            
+            -- Detailed error reporting
+            if statusCode == 400 then
+                print("^1[CAD-911] Error 400: Bad Request - Check data format^0")
+            elseif statusCode == 401 then
+                print("^1[CAD-911] Error 401: Unauthorized - Check API key^0")
+            elseif statusCode == 404 then
+                print("^1[CAD-911] Error 404: Endpoint not found^0")
+            elseif statusCode == 500 then
+                print("^1[CAD-911] Error 500: CAD server error^0")
+            elseif statusCode == 0 or statusCode == nil then
+                print("^1[CAD-911] Connection failed - CAD may be offline^0")
             end
         end
         
-        -- Notify the player (if not NPC report)
+        -- Notify the player (v2.2.0 FIX: Send response back to client)
         if callData.source then
             TriggerClientEvent('cad:911CallResponse', callData.source, success, callData, isNPCReport, isAnonymous)
         end
         
-        -- Notify emergency services if enabled
+        -- Forward to CDE Duty System (always, even if CAD is offline)
+        ForwardToOnDutyUnits(callData, isNPCReport, isAnonymous)
+        
+        -- Also notify emergency services through framework (backup method)
         if success and Config.NotifyEmergencyServices then
             NotifyEmergencyServices(callData, isNPCReport, isAnonymous)
         end
     end, 'POST', jsonData, {
         ['Content-Type'] = 'application/json',
         ['Accept'] = 'application/json',
-        ['X-API-Key'] = 'fivem-cad-911-key-2024'
+        ['X-API-Key'] = Config.APIKey
     })
 end
 
--- Handle 911 call from client
+-- ========================================
+-- EVENT HANDLERS
+-- ========================================
+
+-- Handle regular 911 call from client (v2.2.0 FIX: Added source parameter)
 RegisterNetEvent('cad:send911Call')
 AddEventHandler('cad:send911Call', function(data)
     local source = source
@@ -240,7 +325,7 @@ AddEventHandler('cad:sendAnonymous911Call', function(data)
     SendToCAD(data, false, true)
 end)
 
--- Handle NPC 911 report from client
+-- Handle NPC 911 report from client (v2.2.0: IMPROVED LEO CHECK)
 RegisterNetEvent('cad:sendNPC911Call')
 AddEventHandler('cad:sendNPC911Call', function(data)
     local source = source
@@ -250,12 +335,28 @@ AddEventHandler('cad:sendNPC911Call', function(data)
         return
     end
     
+    -- DOUBLE-CHECK ON SERVER SIDE - Block if player is LEO (v2.2.0 IMPROVED)
+    if GetResourceState('CDE_Duty') == 'started' then
+        local success, isLEO = pcall(function()
+            return exports['CDE_Duty']:IsPlayerOnDutyLEO(source)
+        end)
+        
+        if success and isLEO then
+            if Config.EnableDebug then
+                print(string.format("^3[CAD-911] Blocked NPC report from on-duty LEO: %s^0", GetPlayerName(source)))
+            end
+            return
+        end
+    end
+    
     -- Add source for response
     data.source = source
     
+    -- Get character name
+    data.playerName = "Anonymous Witness"
+    
     -- Log to console
-    print(string.format("^3[CAD-911] NPC Report (%s): %s at %s^0", 
-        data.reportType or "Unknown",
+    print(string.format("^3[CAD-911] NPC Report - %s at %s^0", 
         data.description, 
         data.location
     ))
@@ -264,13 +365,66 @@ AddEventHandler('cad:sendNPC911Call', function(data)
     SendToCAD(data, true, false)
 end)
 
--- Function to notify emergency services
+-- ========================================
+-- EMERGENCY SERVICES NOTIFICATION
+-- ========================================
+
 function NotifyEmergencyServices(callData, isNPCReport, isAnonymous)
-    if not Config.NotifyEmergencyServices then return end
+    -- Only notify if we have a framework
+    if not (Config.Framework.ESX or Config.Framework.QBCore) then
+        return
+    end
     
     local players = GetPlayers()
-    local prefix = isAnonymous and "911 ANONYMOUS TIP" or (isNPCReport and "911 WITNESS REPORT" or "911 DISPATCH")
     
+    -- Prepare prefix based on call type
+    local prefix = ""
+    local color = {255, 0, 0}
+    
+    if isAnonymous then
+        prefix = "📞 ANONYMOUS TIP"
+        color = {128, 128, 128} -- Gray
+    elseif isNPCReport then
+        if callData.reportType then
+            if callData.reportType == "Gunshots" then
+                prefix = "🔫 911 SHOTS FIRED"
+                color = {255, 0, 0} -- Red
+            elseif callData.reportType == "Speeding" or callData.reportType == "SpeedCamera" then
+                prefix = "🚗 911 SPEEDING"
+                color = {255, 255, 0} -- Yellow
+            elseif callData.reportType == "Accident" then
+                prefix = "💥 911 ACCIDENT"
+                color = {255, 165, 0} -- Orange
+            elseif callData.reportType == "Fighting" then
+                prefix = "👊 911 FIGHT"
+                color = {255, 100, 0} -- Orange-red
+            elseif callData.reportType == "Explosion" then
+                prefix = "💣 911 EXPLOSION"
+                color = {255, 0, 0} -- Red
+            elseif callData.reportType == "Brandishing" then
+                prefix = "🔫 911 ARMED PERSON"
+                color = {255, 165, 0} -- Orange
+            elseif callData.reportType == "CCTV" then
+                if callData.subType == "Brandishing" then
+                    prefix = "📹🔫 CCTV ARMED PERSON"
+                else
+                    prefix = "📹 911 CCTV ALERT"
+                end
+                color = {0, 255, 0} -- Green
+            else
+                prefix = "👁️ 911 WITNESS"
+                color = {255, 165, 0} -- Orange
+            end
+        else
+            prefix = "👁️ 911 WITNESS"
+            color = {255, 165, 0} -- Orange
+        end
+    else
+        prefix = "🚨 911 DISPATCH"
+        color = {255, 0, 0} -- Red
+    end
+    
+    -- Framework-based notification (backup for non-duty players)
     for _, playerId in ipairs(players) do
         playerId = tonumber(playerId)
         local playerJob = nil
@@ -300,7 +454,7 @@ function NotifyEmergencyServices(callData, isNPCReport, isAnonymous)
                 end
             end
             
-            -- Check EMS jobs
+            -- Check EMS jobs if not police
             if not isEmergency then
                 for _, job in ipairs(Config.EmergencyJobs.EMS) do
                     if playerJob == job then
@@ -310,207 +464,336 @@ function NotifyEmergencyServices(callData, isNPCReport, isAnonymous)
                 end
             end
             
-            -- Send notification
+            -- Send notification to emergency services
             if isEmergency then
                 TriggerClientEvent('chat:addMessage', playerId, {
-                    color = isAnonymous and {128, 128, 128} or (isNPCReport and {255, 165, 0} or {255, 0, 0}), -- Gray for anon, Orange for NPC, Red for player
+                    color = color,
                     multiline = true,
-                    args = {prefix, callData.description .. " | Location: " .. callData.location}
+                    args = {prefix, callData.description .. " | 📍 " .. callData.location}
                 })
             end
         end
     end
 end
 
--- Function to send to Discord
+-- ========================================
+-- DISCORD INTEGRATION
+-- ========================================
+
 function SendToDiscord(callData, isNPCReport, isAnonymous)
     if not Config.LogToDiscord or Config.DiscordWebhook == "" then return end
     
+    local title = "🚨 911 Emergency Call"
+    local color = Config.DiscordSettings.Colors.Player
+    
+    -- Set title and color based on type
+    if isAnonymous then
+        title = "📞 Anonymous 911 Tip"
+        color = Config.DiscordSettings.Colors.Anonymous
+    elseif isNPCReport then
+        if callData.reportType then
+            if callData.reportType == "Gunshots" then
+                title = "🔫 911 Shots Fired Report"
+                color = Config.DiscordSettings.Colors.Gunshots
+            elseif callData.reportType == "Speeding" or callData.reportType == "SpeedCamera" then
+                title = "🚗 911 Speeding Report" .. (callData.reportType == "SpeedCamera" and " (Speed Camera)" or "")
+                color = Config.DiscordSettings.Colors.SpeedCamera or Config.DiscordSettings.Colors.Speeding
+            elseif callData.reportType == "Accident" then
+                title = "💥 911 Accident Report"
+                color = Config.DiscordSettings.Colors.Accident
+            elseif callData.reportType == "Fighting" then
+                title = "👊 911 Fight Report"
+                color = Config.DiscordSettings.Colors.Fighting
+            elseif callData.reportType == "Explosion" then
+                title = "💣 911 Explosion Report"
+                color = Config.DiscordSettings.Colors.Explosion
+            elseif callData.reportType == "Brandishing" then
+                title = "🔫 911 Armed Person Report"
+                color = Config.DiscordSettings.Colors.Brandishing
+            elseif callData.reportType == "CCTV" then
+                title = "📹 CCTV Alert"
+                color = Config.DiscordSettings.Colors.CCTV
+            end
+        else
+            title = "👁️ 911 Witness Report"
+            color = Config.DiscordSettings.Colors.NPC
+        end
+    end
+    
     local embed = {
         {
-            title = isAnonymous and "📞 Anonymous 911 Tip" or (isNPCReport and "👁️ 911 Witness Report" or "🚨 911 Emergency Call"),
-            description = callData.description,
-            color = isAnonymous and 8421504 or (isNPCReport and 16753920 or 15158332), -- Gray for anon, Orange for NPC, Red for player
+            title = title,
+            description = "**Description:** " .. callData.description .. "\n**Location:** " .. callData.location,
+            color = color,
             fields = {
                 {
                     name = "Caller",
-                    value = isAnonymous and "Anonymous Tip" or (isNPCReport and "Anonymous Witness" or callData.playerName),
+                    value = callData.playerName or "Anonymous",
                     inline = true
                 },
                 {
-                    name = "Location",
-                    value = callData.location,
+                    name = "Type",
+                    value = isAnonymous and "Anonymous" or (isNPCReport and "NPC Report" or "Player Call"),
                     inline = true
                 },
                 {
                     name = "Report Type",
-                    value = isAnonymous and "Anonymous" or (isNPCReport and (callData.reportType or "Witness") or "Player"),
+                    value = callData.reportType or "General",
                     inline = true
                 }
             },
+            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
             footer = {
-                text = "CAD 911 System • " .. os.date("%Y-%m-%d %H:%M:%S")
+                text = "CAD-911 System"
             }
         }
     }
     
-    -- Only include coordinates for non-anonymous calls
-    if callData.coords and not isAnonymous then
-        table.insert(embed[1].fields, {
-            name = "Coordinates",
-            value = string.format("X: %.2f, Y: %.2f", callData.coords.x, callData.coords.y),
-            inline = false
-        })
+    PerformHttpRequest(Config.DiscordWebhook, function(err, text, headers) end, 'POST', json.encode({
+        username = Config.DiscordSettings.Username,
+        avatar_url = Config.DiscordSettings.Avatar ~= "" and Config.DiscordSettings.Avatar or nil,
+        embeds = embed
+    }), { ['Content-Type'] = 'application/json' })
+end
+
+-- ========================================
+-- ADMIN COMMANDS
+-- ========================================
+
+RegisterCommand('testcad', function(source, args)
+    if source ~= 0 then return end
+    
+    print("^3[CAD-911] ========================================^0")
+    print("^3[CAD-911] Testing CAD Connection^0")
+    print("^3[CAD-911] ========================================^0")
+    
+    -- Check dependencies
+    print("^2[CAD-911] Checking dependencies...^0")
+    
+    if not Config then
+        print("^1[CAD-911] ✗ Config not loaded!^0")
+        return
     end
     
-    PerformHttpRequest(Config.DiscordWebhook, function(err, text, headers) end, 
-        'POST', 
-        json.encode({embeds = embed}), 
-        {['Content-Type'] = 'application/json'}
-    )
-end
-
--- Admin command to test CAD connection
-if Config.EnableAdminCommands then
-    RegisterCommand('test911cad', function(source, args, rawCommand)
-        -- Only allow from server console
-        if source ~= 0 then 
-            print("^1[CAD-911] This command can only be used from the server console^0")
-            return 
-        end
+    print("^2[CAD-911]   ✓ Config loaded^0")
+    print("^2[CAD-911] Settings:^0")
+    print("^2[CAD-911]   • CAD Endpoint: " .. Config.CADEndpoint .. "^0")
+    print("^2[CAD-911]   • Community ID: " .. Config.CommunityID .. "^0")
+    print("^2[CAD-911]   • API Key: " .. (Config.APIKey ~= "" and "SET" or "MISSING") .. "^0")
+    
+    -- Check CDE_Duty integration
+    if GetResourceState('CDE_Duty') == 'started' then
+        print("^2[CAD-911] ✓ CDE_Duty integration: Active^0")
         
-        print("^3[CAD-911] Testing CAD connection...^0")
-        print("^3[CAD-911] Endpoint: " .. Config.CADEndpoint .. "^0")
-        print("^3[CAD-911] Community ID: " .. Config.CommunityID .. "^0")
-        
-        local testData = {
-            callType = "911 - Connection Test",
-            location = "Server Test Location",
-            callerName = "System Test",  -- Changed from 'caller' to 'callerName'
-            communityId = Config.CommunityID
-        }
-        
-        print("^3[CAD-911] Sending test data: " .. json.encode(testData) .. "^0")
-        
-        PerformHttpRequest(Config.CADEndpoint, function(statusCode, response, headers)
-            if statusCode == 200 or statusCode == 201 then
-                print("^2[CAD-911] SUCCESS: CAD connection working!^0")
-                if response then
-                    print("^2[CAD-911] Response: " .. response .. "^0")
-                end
-            else
-                print("^1[CAD-911] FAILED: Status Code: " .. statusCode .. "^0")
-                if response then
-                    print("^1[CAD-911] Response: " .. response .. "^0")
-                end
-                print("^1[CAD-911] Make sure your CAD backend is running and accessible^0")
-                
-                -- Debug the request data
-                print("^1[CAD-911] Request data sent: " .. json.encode(testData) .. "^0")
-                print("^1[CAD-911] Headers sent: Content-Type: application/json, X-API-Key: fivem-cad-911-key-2024^0")
-            end
-        end, 'POST', json.encode(testData), {
-            ['Content-Type'] = 'application/json',
-            ['Accept'] = 'application/json',
-            ['X-API-Key'] = 'fivem-cad-911-key-2024'
-        })
-    end, true)
-end
-
--- Server command to test postal lookup
-if Config.EnableAdminCommands then
-    RegisterCommand('testpostal', function(source, args, rawCommand)
-        if source ~= 0 then 
-            print("^1[CAD-911] This command can only be used from the server console^0")
-            return 
-        end
-        
-        print("^3[CAD-911] === POSTAL TEST RESULTS ===^0")
-        
-        -- Test multiple locations
-        local testLocations = {
-            {name = "Los Santos Airport", x = -1037.0, y = -2737.0, z = 20.0},
-            {name = "Legion Square", x = 195.0, y = -933.0, z = 30.0},
-            {name = "Sandy Shores", x = 1961.0, y = 3740.0, z = 32.0}
-        }
-        
-        for _, location in ipairs(testLocations) do
-            local testCoords = {x = location.x, y = location.y, z = location.z}
-            local postal = GetNearestPostal(testCoords, nil)
+        if exports['CDE_Duty'] then
+            local success, leoUnits = pcall(function() return exports['CDE_Duty']:GetOnDutyLEOUnits() end)
+            local success2, fireUnits = pcall(function() return exports['CDE_Duty']:GetOnDutyFireUnits() end)
             
-            print("^3[CAD-911] Location: " .. location.name .. "^0")
-            print("^3[CAD-911]   Coordinates: " .. testCoords.x .. ", " .. testCoords.y .. "^0")
-            print("^3[CAD-911]   Postal Code: " .. (postal or "FAILED") .. "^0")
-            print("^3[CAD-911] ---^0")
+            if success and success2 then
+                print(string.format("^2[CAD-911]   On-duty units: %d LEO, %d Fire/EMS^0", 
+                    leoUnits and #leoUnits or 0, 
+                    fireUnits and #fireUnits or 0))
+            end
+        end
+    else
+        print("^3[CAD-911] ⚠ CDE_Duty integration: Not running^0")
+    end
+    
+    local testData = {
+        callType = "911 - System Test",
+        location = "Server Console Test",
+        callerName = "System Administrator",
+        communityId = Config.CommunityID,
+        metadata = {
+            test = true,
+            timestamp = os.time()
+        }
+    }
+    
+    local jsonData = json.encode(testData)
+    print("^3[CAD-911] Test data: " .. jsonData .. "^0")
+    
+    PerformHttpRequest(Config.CADEndpoint, function(statusCode, response, headers)
+        print("^3[CAD-911] ========================================^0")
+        print("^3[CAD-911] TEST RESULTS^0")
+        print("^3[CAD-911] ========================================^0")
+        print("^3[CAD-911] Status Code: " .. tostring(statusCode) .. "^0")
+        
+        if statusCode == 200 or statusCode == 201 then
+            print("^2[CAD-911] ✓ SUCCESS: CAD connection working!^0")
+            if response then
+                print("^2[CAD-911] Response: " .. response .. "^0")
+            end
+        else
+            print("^1[CAD-911] ✗ FAILED: Connection error^0")
+            
+            if statusCode == 0 or statusCode == nil then
+                print("^1[CAD-911] Cannot reach CAD backend^0")
+                print("^1[CAD-911] Possible issues:^0")
+                print("^1[CAD-911]   • CAD backend not running^0")
+                print("^1[CAD-911]   • Incorrect URL^0")
+                print("^1[CAD-911]   • Firewall blocking connection^0")
+                print("^1[CAD-911]   • Network issues^0")
+            elseif statusCode == 404 then
+                print("^1[CAD-911] Endpoint not found^0")
+                print("^1[CAD-911] Check if URL is correct: " .. Config.CADEndpoint .. "^0")
+            elseif statusCode == 401 or statusCode == 403 then
+                print("^1[CAD-911] Authentication failed^0")
+                print("^1[CAD-911] Check your API key configuration^0")
+            elseif statusCode == 400 then
+                print("^1[CAD-911] Bad request - CAD rejected the data format^0")
+            elseif statusCode == 500 then
+                print("^1[CAD-911] CAD backend server error^0")
+            end
+            
+            if response then
+                print("^1[CAD-911] Error details: " .. response .. "^0")
+            end
         end
         
-        -- Test if nearest-postal resource exists
-        local resourceState = GetResourceState('nearest-postal')
-        print("^3[CAD-911] Nearest-postal resource state: " .. resourceState .. "^0")
-        
-        if resourceState ~= 'started' then
-            print("^1[CAD-911] ERROR: nearest-postal resource is not started!^0")
-            print("^1[CAD-911] Make sure to 'ensure nearest-postal' in your server.cfg^0")
-        end
-        
-        -- Try to list available exports
-        print("^3[CAD-911] Checking available exports...^0")
-        local success, exports_list = pcall(function()
-            return GetResourceMetadata('nearest-postal', 'export', 0)
-        end)
-        if success and exports_list then
-            print("^3[CAD-911] Available exports: " .. tostring(exports_list) .. "^0")
-        end
-    end, true)
-end
+        print("^3[CAD-911] ========================================^0")
+    end, 'POST', jsonData, {
+        ['Content-Type'] = 'application/json',
+        ['Accept'] = 'application/json',
+        ['X-API-Key'] = Config.APIKey
+    })
+end, true)
 
--- Version check and startup tests
+-- Test 911 to duty units
+RegisterCommand('test911duty', function(source, args)
+    if source ~= 0 then return end
+    
+    print("^3[CAD-911] Testing 911 to duty integration...^0")
+    
+    local testCallData = {
+        description = "Test emergency call from console",
+        location = "Test Location - Postal 123",
+        coords = {x = 0, y = 0, z = 0},
+        playerName = "Console Test",
+        reportType = "TEST",
+        isNPC = false,
+        isAnonymous = false
+    }
+    
+    ForwardToOnDutyUnits(testCallData, false, false)
+    
+    print("^2[CAD-911] Test call sent to on-duty units^0")
+end, true)
+
+-- Check LEO status command
+RegisterCommand('checkleo', function(source, args)
+    if source == 0 then
+        print("^1[CAD-911] This command must be used in-game^0")
+        return
+    end
+    
+    if GetResourceState('CDE_Duty') == 'started' then
+        local success, isLEO = pcall(function()
+            return exports['CDE_Duty']:IsPlayerOnDutyLEO(source)
+        end)
+        
+        if success then
+            print(string.format("^2[CAD-911] %s is %s^0", 
+                GetPlayerName(source), 
+                isLEO and "ON DUTY LEO" or "NOT on duty LEO"))
+            TriggerClientEvent('chat:addMessage', source, {
+                args = {"System", "LEO Status: " .. (isLEO and "ON DUTY" or "OFF DUTY")}
+            })
+        end
+    else
+        print("^3[CAD-911] CDE_Duty not running^0")
+    end
+end, false)
+
+-- ========================================
+-- STARTUP & VERSION CHECK
+-- ========================================
+
 Citizen.CreateThread(function()
     -- Wait for config to load
     while not Config do
         Citizen.Wait(100)
     end
     
-    print("^2[CAD-911] 911 CAD Integration v1.2.0 loaded^0")
-    print("^2[CAD-911] Commands:^0")
-    print("^2[CAD-911]   - /" .. (Config.Command or "911") .. " - Regular 911 call^0")
-    print("^2[CAD-911]   - /" .. (Config.AnonymousCommand or "a911") .. " - Anonymous 911 tip^0")
+    print("^2[CAD-911] ========================================^0")
+    print("^2[CAD-911] 911 CAD Integration System v2.2.0^0")
+    print("^2[CAD-911] With CDE Duty System Integration^0")
+    print("^2[CAD-911] Speed Camera Support & Improved LEO Bypass^0")
+    print("^2[CAD-911] ========================================^0")
+    print("^2[CAD-911] Initializing...^0")
+    
+    -- Display active features
+    print("^2[CAD-911] Active Features:^0")
+    print("^2[CAD-911]   • Player 911 Calls: /" .. Config.Command .. "^0")
+    print("^2[CAD-911]   • Anonymous Tips: /" .. Config.AnonymousCommand .. "^0")
     
     if Config.NPCReports.Enabled then
-        print("^2[CAD-911] NPC Reports: ENABLED^0")
-        if Config.NPCReports.Speeding.Enabled then
-            print("^2[CAD-911]   - Speeding Detection: ON (>" .. Config.NPCReports.Speeding.SpeedThreshold .. " km/h)^0")
+        local activeReports = {}
+        if Config.NPCReports.Speeding.Enabled then table.insert(activeReports, "Speeding") end
+        if Config.NPCReports.Gunshots.Enabled then table.insert(activeReports, "Gunshots") end
+        if Config.NPCReports.Accidents and Config.NPCReports.Accidents.Enabled then table.insert(activeReports, "Accidents") end
+        if Config.NPCReports.Fighting and Config.NPCReports.Fighting.Enabled then table.insert(activeReports, "Fighting") end
+        if Config.NPCReports.Explosions and Config.NPCReports.Explosions.Enabled then table.insert(activeReports, "Explosions") end
+        if Config.NPCReports.Brandishing and Config.NPCReports.Brandishing.Enabled then table.insert(activeReports, "Brandishing") end
+        if Config.NPCReports.CCTV and Config.NPCReports.CCTV.Enabled then table.insert(activeReports, "CCTV") end
+        
+        if #activeReports > 0 then
+            print("^2[CAD-911]   • NPC Reports: " .. table.concat(activeReports, ", ") .. "^0")
+            print("^2[CAD-911]   • LEO Bypass: Enabled (LEOs won't trigger NPC reports)^0")
         end
-        if Config.NPCReports.Gunshots.Enabled then
-            print("^2[CAD-911]   - Gunshot Detection: ON^0")
-        end
-    else
-        print("^3[CAD-911] NPC Reports: DISABLED^0")
     end
     
-    if Config.EnableAdminCommands then
-        print("^2[CAD-911] Admin commands enabled. Use 'test911cad' and 'testpostal' in console to test.^0")
+    if Config.SpeedCameras and Config.SpeedCameras.Enabled then
+        print("^2[CAD-911]   • Speed Cameras: Enabled (" .. #Config.SpeedCameras.Locations .. " cameras)^0")
     end
     
-    -- Wait for other resources to load
+    if Config.LogToDiscord then
+        print("^2[CAD-911]   • Discord Logging: Enabled^0")
+    end
+    
+    if Config.NotifyEmergencyServices then
+        print("^2[CAD-911]   • Emergency Service Notifications: Enabled^0")
+    end
+    
+    -- Wait for other resources
     Citizen.Wait(3000)
     
-    -- Check nearest-postal resource state
-    local resourceState = GetResourceState('nearest-postal')
-    print("^3[CAD-911] Checking nearest-postal resource: " .. resourceState .. "^0")
+    -- Check dependencies
+    print("^2[CAD-911] Checking dependencies...^0")
     
-    if resourceState == 'started' then
-        -- Test nearest-postal integration
-        local testCoords = {x = 0.0, y = 0.0, z = 0.0}
-        local postal = GetNearestPostal(testCoords, nil)
-        if postal then
-            print("^2[CAD-911] Nearest-postal integration: SUCCESS^0")
-        else
-            print("^1[CAD-911] Nearest-postal integration: PARTIAL - Resource running but export calls failing^0")
-            print("^1[CAD-911] Try 'testpostal' command for detailed debugging^0")
-        end
+    local postalState = GetResourceState('nearest-postal')
+    if postalState == 'started' then
+        print("^2[CAD-911]   ✓ nearest-postal: Ready^0")
     else
-        print("^1[CAD-911] Nearest-postal integration: FAILED - Resource not started^0")
-        print("^1[CAD-911] Add 'ensure nearest-postal' to your server.cfg before 'ensure " .. GetCurrentResourceName() .. "'^0")
+        print("^1[CAD-911]   ✗ nearest-postal: Not found (postal codes disabled)^0")
+    end
+    
+    -- Check CDE_Duty integration
+    local dutyState = GetResourceState('CDE_Duty')
+    if dutyState == 'started' then
+        print("^2[CAD-911]   ✓ CDE_Duty: Ready (duty system integrated)^0")
+        print("^2[CAD-911]   ✓ LEO Detection: Active^0")
+    else
+        print("^3[CAD-911]   ⚠ CDE_Duty: Not running (framework fallback active)^0")
+        print("^3[CAD-911]   ⚠ LEO Detection: Disabled^0")
+    end
+    
+    -- Admin commands reminder
+    if Config.EnableAdminCommands then
+        print("^2[CAD-911] Admin Commands Available:^0")
+        print("^2[CAD-911]   • testcad - Test CAD connection^0")
+        print("^2[CAD-911]   • test911duty - Test duty integration^0")
+        print("^2[CAD-911]   • checkleo - Check player LEO status^0")
+    end
+    
+    print("^2[CAD-911] ========================================^0")
+    print("^2[CAD-911] System Ready!^0")
+    print("^2[CAD-911] ========================================^0")
+    
+    -- Auto-test on startup if debug enabled
+    if Config.EnableDebug then
+        Citizen.Wait(5000)
+        print("^3[CAD-911] Running startup connection test...^0")
+        ExecuteCommand('testcad')
     end
 end)
