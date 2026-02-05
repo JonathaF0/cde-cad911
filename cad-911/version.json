@@ -1,9 +1,9 @@
 {
-    "version": "1.0.0",
-    "name": "CAD-911 Integration",
+    "version": "2.1.0",
+    "name": "CDE CAD-911 Integration",
     "description": "FiveM 911 Emergency Call Integration with CAD Systems",
-    "author": "CAD System",
-    "repository": "https://github.com/yourusername/cad-911",
+    "author": "CDE Inc",
+    "repository": "https://github.com/JonathaF0/cde-cad911",
     "changelog": {
         "1.0.0": [
             "Initial release",
