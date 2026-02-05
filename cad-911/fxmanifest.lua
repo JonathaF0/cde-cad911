@@ -1,10 +1,10 @@
 fx_version 'cerulean'
 game 'gta5'
 
-author 'CAD System Integration'
+author 'CDE Inc'
 description '911 Emergency Call Integration with CAD System'
-version '1.0.0'
-repository 'https://github.com/yourusername/cad-911'
+version '2.1.0'
+repository 'https://github.com/JonathaF0/cde-cad911'
 
 -- Requires nearest-postal for location services
 dependency 'nearest-postal'
