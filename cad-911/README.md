@@ -1,4 +1,4 @@
-# 🚨 FiveM 911 CAD Integration
+# FiveM 911 CAD Integration
 
 A FiveM resource that integrates 911 emergency calls with your CAD (Computer Aided Dispatch) system.
 
@@ -15,13 +15,13 @@ A FiveM resource that integrates 911 emergency calls with your CAD (Computer Aid
 ## Prerequisites
 
 1. **[nearest-postal](https://github.com/DevBlocky/nearest-postal)** - Required for postal code detection
-2. A working CAD system with the 911 API endpoint
+2. A working CDE CAD subscription
 
 ## Installation
 
 1. **Download** this resource
 2. **Extract** to your server's `resources` folder
-3. **Install nearest-postal** if you haven't already:
+3. **Install nearest-postal** if you haven't already: (VPS Hosting Only) 
    ```bash
    cd resources
    git clone https://github.com/DevBlocky/nearest-postal.git
@@ -40,7 +40,7 @@ Edit `config.lua` and update these required settings:
 
 ```lua
 -- Your CAD system's API endpoint
-Config.CADEndpoint = "http://your-cad-server:3000/api/civilian/911-call"
+Config.CADEndpoint = "http://cdecad.com/api/civilian/911-call"
 
 -- Your community ID from the CAD system
 Config.CommunityID = "your_community_id_here"
@@ -150,8 +150,7 @@ This resource is provided as-is under the MIT License.
 ## Credits
 
 - Uses [nearest-postal](https://github.com/DevBlocky/nearest-postal) for postal codes
-- Designed for integration with CAD systems
+- Designed for integration with CDE CAD system
 
 ---
 
-Made with ❤️ for the FiveM roleplay community
