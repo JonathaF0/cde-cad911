@@ -40,7 +40,7 @@ Edit `config.lua` and update these required settings:
 
 ```lua
 -- Your CAD system's API endpoint
-Config.CADEndpoint = "http://your-cad-server:3000/api/civilian/911-call"
+Config.CADEndpoint = "http://cdecad.com:3000/api/civilian/911-call"
 
 -- Your community ID from the CAD system
 Config.CommunityID = "your_community_id_here"
@@ -60,6 +60,7 @@ Config.CommunityID = "your_community_id_here"
 
 ```
 /911 [description of emergency]
+/a911 [description of emergency] (sends anonymously)
 ```
 
 Examples:
@@ -115,17 +116,16 @@ Config.Framework = {
 ## Troubleshooting
 
 ### Calls not appearing in CAD?
-1. Check your CAD backend is running
-2. Verify the endpoint URL in `config.lua`
-3. Use `test911cad` in server console to test connection
-4. Check server console for error messages
+1. Verify the endpoint URL in `config.lua`
+2. Use `test911cad` in server console to test connection
+3. Check server console for error messages
 
 ### Location showing as coordinates?
 - Ensure `nearest-postal` is installed and started
-- Make sure it's listed before `cad-911` in server.cfg
+- Make sure it's listed before `cde-911` in server.cfg
 
 ### "Unknown command" error?
-- Verify the resource is started: `ensure cad-911`
+- Verify the resource is started: `ensure cde-911`
 - Check server console for startup errors
 
 ## Discord Logging
